@@ -1,14 +1,16 @@
-{-# OPTIONS_HADDOCK not-home #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# OPTIONS_HADDOCK not-home #-}
 
--- | __This is an internal module.__ Backwards compatibility will not be maintained. See
--- "Control.Monad.Validate" for the public interface.
+{- | __This is an internal module.__ Backwards compatibility will not be maintained. See
+"Control.Monad.Validate" for the public interface.
+-}
 module Control.Monad.Validate.Internal where
 
-import Control.Monad.IO.Class
+import Control.Monad ((<=<))
 import Control.Monad.Base
 import Control.Monad.Catch
 import Control.Monad.Except
+import Control.Monad.IO.Class
 import Control.Monad.Reader.Class
 import Control.Monad.State.Strict
 import Control.Monad.Trans.Control
@@ -19,7 +21,7 @@ import Data.Tuple (swap)
 
 import Control.Monad.Validate.Class
 
-{-| 'ValidateT' is a monad transformer for writing validations. Like 'ExceptT', 'ValidateT' is
+{- | 'ValidateT' is a monad transformer for writing validations. Like 'ExceptT', 'ValidateT' is
 primarily concerned with the production of errors, but it differs from 'ExceptT' in that 'ValidateT'
 is designed not to necessarily halt on the first error. Instead, it provides a mechanism for
 collecting many warnings or errors, ideally as many as possible, before failing. In that sense,
@@ -260,23 +262,29 @@ use a @Set@ or @HashSet@. If it does, but either LIFO consumption of the data is
 okay with paying to reverse the data once after collecting the errors, use @'Data.Semigroup.Dual'
 [a]@ to accumulate elements in an efficient manner. If neither is true, use a data structure like
 @Seq@ that provides an efficient implementation of a functional queue. You can always convert back
-to a plain list at the end once you’re done, if you have to. -}
+to a plain list at the end once you’re done, if you have to.
+-}
 newtype ValidateT e m a = ValidateT
-  { getValidateT :: forall s. StateT (MonoMaybe s e) (ExceptT e m) a }
+  {getValidateT :: forall s. StateT (MonoMaybe s e) (ExceptT e m) a}
+
 -- Sadly, GeneralizedNewtypeDeriving can’t help us here due to the inner forall, but we can at least
 -- derive the Functor instance.
 deriving instance (Functor m) => Functor (ValidateT e m)
 
 validateT
-  :: forall e m a. (Functor m)
+  :: forall e m a
+   . (Functor m)
   => (forall s. MonoMaybe s e -> m (Either e (MonoMaybe s e, a)))
   -> ValidateT e m a
 validateT f = ValidateT (StateT (ExceptT . (fmap (fmap swap) . f)))
 {-# INLINE validateT #-}
 
 unValidateT
-  :: forall s e m a. (Functor m)
-  => MonoMaybe s e -> ValidateT e m a -> m (Either e (MonoMaybe s e, a))
+  :: forall s e m a
+   . (Functor m)
+  => MonoMaybe s e
+  -> ValidateT e m a
+  -> m (Either e (MonoMaybe s e, a))
 unValidateT e (ValidateT m) = runExceptT (swap <$> runStateT m e)
 {-# INLINE unValidateT #-}
 
@@ -286,13 +294,15 @@ instance (Monad m) => Applicative (ValidateT e m) where
 
   m1 <*> m2 = validateT $ \e0 ->
     unValidateT e0 m1 >>= \case
-      Left e1 -> unValidateT (MJust @'SJust e1) m2 <&> \case
-        Left e2 -> Left e2
-        Right (MJust e2, _) -> Left e2
-      Right (e1, v1) -> unValidateT e1 m2 <&> \case
-        Left e2 -> Left e2
-        Right (e2, v2) -> Right (e2, v1 v2)
-  {-# INLINABLE (<*>) #-}
+      Left e1 ->
+        unValidateT (MJust @'SJust e1) m2 <&> \case
+          Left e2 -> Left e2
+          Right (MJust e2, _) -> Left e2
+      Right (e1, v1) ->
+        unValidateT e1 m2 <&> \case
+          Left e2 -> Left e2
+          Right (e2, v2) -> Right (e2, v1 v2)
+  {-# INLINEABLE (<*>) #-}
 
 instance (Monad m) => Monad (ValidateT e m) where
   ValidateT m >>= f = ValidateT (m >>= \x -> getValidateT (f x))
@@ -310,12 +320,15 @@ instance (MonadBase b m) => MonadBase b (ValidateT e m) where
   liftBase = lift . liftBase
   {-# INLINE liftBase #-}
 
--- | An opaque type used to capture the current state of a 'ValidateT' computation, used as the
--- 'StT' instance for 'ValidateT'. It is opaque in an attempt to protect internal invariants about
--- the state, but it is unfortunately still theoretically possible for it to be misused (but such
--- misuses are exceedingly unlikely).
-data ValidateTState e a = forall s. ValidateTState
-  { getValidateTState :: Either e (MonoMaybe s e, a) }
+{- | An opaque type used to capture the current state of a 'ValidateT' computation, used as the
+'StT' instance for 'ValidateT'. It is opaque in an attempt to protect internal invariants about
+the state, but it is unfortunately still theoretically possible for it to be misused (but such
+misuses are exceedingly unlikely).
+-}
+data ValidateTState e a = forall s.
+  ValidateTState
+  {getValidateTState :: Either e (MonoMaybe s e, a)}
+
 deriving instance (Show e, Show a) => Show (ValidateTState e a)
 deriving instance Functor (ValidateTState e)
 
@@ -324,32 +337,33 @@ instance MonadTransControl (ValidateT e) where
 
   liftWith f = validateT $ \e ->
     Right . (e,) <$> f (fmap ValidateTState . unValidateT e)
-  {-# INLINABLE liftWith #-}
+  {-# INLINEABLE liftWith #-}
 
   restoreT m = validateT $ \e1 -> do
     ValidateTState r <- m
     case e1 of
       MNothing -> case r of
-        Left e2             -> pure $ Left e2
+        Left e2 -> pure $ Left e2
         Right (MJust e2, v) -> pure $ Right (MJust e2, v)
         Right (MNothing, v) -> pure $ Right (MNothing, v)
       MJust _ -> case r of
-        Left e2             -> pure $ Left e2
+        Left e2 -> pure $ Left e2
         Right (MJust e2, v) -> pure $ Right (MJust e2, v)
         Right (MNothing, _) -> invalidRestoreError
-  {-# INLINABLE restoreT #-}
+  {-# INLINEABLE restoreT #-}
 
 invalidRestoreError :: a
-invalidRestoreError = error
-  "Control.Monad.Validate.ValidateT#restoreT: panic!\n\
-  \  An attempt was made to restore from a state captured before any validation\n\
-  \  errors occurred into a context with validation errors. This is probably the\n\
-  \  result of an incorrect use of MonadBaseControl (as validation errors should\n\
-  \  strictly increase). Ensure that all state is restored immediately upon\n\
-  \  returning from the base monad (or is not restored at all).\n\
-  \\n\
-  \  If you believe your use of MonadBaseControl is not in error, and this is a\n\
-  \  bug in ValidateT, please submit a bug report."
+invalidRestoreError =
+  error
+    "Control.Monad.Validate.ValidateT#restoreT: panic!\n\
+    \  An attempt was made to restore from a state captured before any validation\n\
+    \  errors occurred into a context with validation errors. This is probably the\n\
+    \  result of an incorrect use of MonadBaseControl (as validation errors should\n\
+    \  strictly increase). Ensure that all state is restored immediately upon\n\
+    \  returning from the base monad (or is not restored at all).\n\
+    \\n\
+    \  If you believe your use of MonadBaseControl is not in error, and this is a\n\
+    \  bug in ValidateT, please submit a bug report."
 
 instance (MonadBaseControl b m) => MonadBaseControl b (ValidateT e m) where
   type StM (ValidateT e m) a = ComposeSt (ValidateT e) m a
@@ -361,7 +375,9 @@ instance (MonadBaseControl b m) => MonadBaseControl b (ValidateT e m) where
 liftCatch
   :: (Functor m)
   => (forall b. m b -> (e -> m b) -> m b)
-  -> ValidateT d m a -> (e -> ValidateT d m a) -> ValidateT d m a
+  -> ValidateT d m a
+  -> (e -> ValidateT d m a)
+  -> ValidateT d m a
 liftCatch catchE m f = validateT $ \e ->
   catchE (unValidateT e m) (unValidateT e . f)
 {-# INLINE liftCatch #-}
@@ -409,7 +425,8 @@ instance (MonadCatch m) => MonadCatch (ValidateT e m) where
 liftMask
   :: (Functor m)
   => (forall c. ((forall a. m a -> m a) -> m c) -> m c)
-  -> ((forall a. ValidateT e m a -> ValidateT e m a) -> ValidateT e m b) -> ValidateT e m b
+  -> ((forall a. ValidateT e m a -> ValidateT e m a) -> ValidateT e m b)
+  -> ValidateT e m b
 liftMask maskE f = validateT $ \e1 ->
   maskE $ \unmask ->
     unValidateT e1 $ f $ \m ->
@@ -420,10 +437,12 @@ liftMask maskE f = validateT $ \e1 ->
 instance (MonadMask m) => MonadMask (ValidateT e m) where
   mask = liftMask mask
   uninterruptibleMask = liftMask uninterruptibleMask
-  generalBracket m f g = ValidateT $ generalBracket
-    (getValidateT m)
-    (\a b -> getValidateT $ f a b)
-    (\a -> getValidateT $ g a)
+  generalBracket m f g =
+    ValidateT $
+      generalBracket
+        (getValidateT m)
+        (\a b -> getValidateT $ f a b)
+        (\a -> getValidateT $ g a)
   {-# INLINE mask #-}
   {-# INLINE uninterruptibleMask #-}
   {-# INLINE generalBracket #-}
@@ -435,31 +454,34 @@ instance (Monad m, Semigroup e) => MonadValidate e (ValidateT e m) where
     let !e3 = monoMaybe e2 (<> e2) e1 in pure (Right (MJust e3, ()))
   tolerate m = validateT $ \e1 ->
     Right . either (\e2 -> (MJust e2, Nothing)) (fmap Just) <$> unValidateT e1 m
-  {-# INLINABLE refute #-}
-  {-# INLINABLE dispute #-}
-  {-# INLINABLE tolerate #-}
+  {-# INLINEABLE refute #-}
+  {-# INLINEABLE dispute #-}
+  {-# INLINEABLE tolerate #-}
 
--- | Runs a 'ValidateT' computation, returning the errors raised by 'refute' or 'dispute' if any,
--- otherwise returning the computation’s result.
+{- | Runs a 'ValidateT' computation, returning the errors raised by 'refute' or 'dispute' if any,
+otherwise returning the computation’s result.
+-}
 runValidateT :: forall e m a. (Functor m) => ValidateT e m a -> m (Either e a)
-runValidateT m = unValidateT MNothing m <&> \case
-  Left e              -> Left e
-  Right (MJust e, _)  -> Left e
-  Right (MNothing, v) -> Right v
+runValidateT m =
+  unValidateT MNothing m <&> \case
+    Left e -> Left e
+    Right (MJust e, _) -> Left e
+    Right (MNothing, v) -> Right v
 
--- | Runs a 'ValidateT' computation, returning the errors on failure or 'mempty' on success. The
--- computation’s result, if any, is discarded.
---
--- @
--- >>> 'execValidate' ('refute' ["bang"])
--- ["bang"]
--- >>> 'execValidate' @[] ('pure' 42)
--- []
--- @
+{- | Runs a 'ValidateT' computation, returning the errors on failure or 'mempty' on success. The
+computation’s result, if any, is discarded.
+
+@
+>>> 'execValidate' ('refute' ["bang"])
+["bang"]
+>>> 'execValidate' @[] ('pure' 42)
+[]
+@
+-}
 execValidateT :: forall e m a. (Monoid e, Functor m) => ValidateT e m a -> m e
 execValidateT = fmap (either id mempty) . runValidateT
 
-{-| Runs a 'ValidateT' transformer by interpreting it in an underlying transformer with a
+{- | Runs a 'ValidateT' transformer by interpreting it in an underlying transformer with a
 'MonadValidate' instance. That might seem like a strange thing to do, but it can be useful in
 combination with 'mapErrors' to locally alter the error type in a larger 'ValidateT' computation.
 For example:
@@ -480,30 +502,37 @@ throwsBoth = do
 'Left' ['Left' 42, 'Right' False]
 @
 
-@since 1.1.0.0 -}
+@since 1.1.0.0
+-}
 embedValidateT :: forall e m a. (MonadValidate e m) => ValidateT e m a -> m a
-embedValidateT m = unValidateT MNothing m >>= \case
-  Left e              -> refute e
-  Right (MJust e, v)  -> dispute e $> v
-  Right (MNothing, v) -> pure v
+embedValidateT m =
+  unValidateT MNothing m >>= \case
+    Left e -> refute e
+    Right (MJust e, v) -> dispute e $> v
+    Right (MNothing, v) -> pure v
 
--- | Applies a function to all validation errors produced by a 'ValidateT' computation.
---
--- @
--- >>> 'runValidate' '$' 'mapErrors' ('map' 'show') ('refute' [11, 42])
--- 'Left' ["11", "42"]
--- @
---
--- @since 1.1.0.0
+{- | Applies a function to all validation errors produced by a 'ValidateT' computation.
+
+@
+>>> 'runValidate' '$' 'mapErrors' ('map' 'show') ('refute' [11, 42])
+'Left' ["11", "42"]
+@
+
+@since 1.1.0.0
+-}
 mapErrors
-  :: forall e1 e2 m a. (Monad m, Semigroup e2)
-  => (e1 -> e2) -> ValidateT e1 m a -> ValidateT e2 m a
-mapErrors f m = lift (unValidateT MNothing m) >>= \case
-  Left e              -> refute (f e)
-  Right (MJust e, v)  -> dispute (f e) $> v
-  Right (MNothing, v) -> pure v
+  :: forall e1 e2 m a
+   . (Monad m, Semigroup e2)
+  => (e1 -> e2)
+  -> ValidateT e1 m a
+  -> ValidateT e2 m a
+mapErrors f m =
+  lift (unValidateT MNothing m) >>= \case
+    Left e -> refute (f e)
+    Right (MJust e, v) -> dispute (f e) $> v
+    Right (MNothing, v) -> pure v
 
-{-| Runs a 'ValidateT' computation, and if it raised any errors, re-raises them using 'throwError'.
+{- | Runs a 'ValidateT' computation, and if it raised any errors, re-raises them using 'throwError'.
 This effectively converts a computation that uses 'ValidateT' (or 'MonadValidate') into one that
 uses 'MonadError'.
 
@@ -514,12 +543,13 @@ uses 'MonadError'.
 'Left' ["boom", "bang"]
 @
 
-@since 1.2.0.0 -}
+@since 1.2.0.0
+-}
 validateToError :: forall e m a. (MonadError e m) => ValidateT e m a -> m a
 validateToError = validateToErrorWith id
 {-# INLINE validateToError #-}
 
-{-| Like 'validateToError', but additionally accepts a function, which is applied to the errors
+{- | Like 'validateToError', but additionally accepts a function, which is applied to the errors
 raised by 'ValidateT' before passing them to 'throwError'. This can be useful to concatenate
 multiple errors into one.
 
@@ -530,7 +560,8 @@ multiple errors into one.
 'Left' "boombang"
 @
 
-@since 1.2.0.0 -}
+@since 1.2.0.0
+-}
 validateToErrorWith :: forall e1 e2 m a. (MonadError e2 m) => (e1 -> e2) -> ValidateT e1 m a -> m a
 validateToErrorWith f = either (throwError . f) pure <=< runValidateT
 {-# INLINE validateToErrorWith #-}
@@ -548,7 +579,7 @@ execValidate :: forall e a. (Monoid e) => Validate e a -> e
 execValidate = runIdentity . execValidateT
 {-# INLINE execValidate #-}
 
-{-| Monotonically increasing 'Maybe' values. A function with the type
+{- | Monotonically increasing 'Maybe' values. A function with the type
 
 @
 forall s. 'MonoMaybe' s Foo -> 'MonoMaybe' s Bar
@@ -576,6 +607,7 @@ proceed safely.
 data MonoMaybe s a where
   MNothing :: MonoMaybe 'SMaybe a
   MJust :: forall s a. !a -> MonoMaybe s a
+
 deriving instance (Show a) => Show (MonoMaybe s a)
 deriving instance (Eq a) => Eq (MonoMaybe s a)
 deriving instance (Ord a) => Ord (MonoMaybe s a)
@@ -585,8 +617,8 @@ deriving instance Functor (MonoMaybe s)
 data MonoMaybeS = SMaybe | SJust
 
 -- | Like 'maybe' but for 'MonoMaybe'.
-monoMaybe :: (s ~ 'SMaybe => b) -> (a -> b) -> MonoMaybe s a -> b
+monoMaybe :: ((s ~ 'SMaybe) => b) -> (a -> b) -> MonoMaybe s a -> b
 monoMaybe v f = \case
   MNothing -> v
-  MJust x  -> f x
+  MJust x -> f x
 {-# INLINE monoMaybe #-}
